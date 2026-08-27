@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>브랜드 캐릭터 숏츠 만들기</title>
+<style>
+  body { font-family: sans-serif; max-width: 640px; margin: 30px auto; padding: 0 16px; line-height: 1.5; }
+  h2 { border-bottom: 2px solid #333; padding-bottom: 6px; }
+  .step { border: 1px solid #ccc; border-radius: 8px; padding: 16px; margin-bottom: 20px; }
+  .step.disabled { opacity: 0.4; pointer-events: none; }
+  label { display: block; margin-top: 10px; font-weight: bold; font-size: 14px; }
+  input, textarea { width: 100%; padding: 6px; margin-top: 4px; box-sizing: border-box; font-size: 14px; }
+  textarea { height: 60px; }
+  button { margin-top: 12px; padding: 8px 16px; cursor: pointer; font-size: 14px; }
+  .btn-primary { background: #2563eb; color: white; border: none; border-radius: 4px; }
+  .btn-secondary { background: #eee; border: 1px solid #999; border-radius: 4px; }
+  .result { margin-top: 14px; padding: 10px; background: #f7f7f7; border-radius: 6px; }
+  .result img { max-width: 100%; border-radius: 6px; }
+  .result video { max-width: 100%; border-radius: 6px; }
+  .error { color: #c00; font-weight: bold; white-space: pre-wrap; }
+  .loading { color: #888; }
+  .hint { color: #888; font-size: 12px; margin-top: 2px; }
+</style>
+</head>
+<body>
+
+<h1>브랜드 캐릭터 숏츠 만들기</h1>
+
+<!-- STEP 1: 캐릭터 -->
+<div class="step" id="step1">
+  <h2>1단계. 캐릭터</h2>
+  <label>기존 브랜드ID (있으면 입력, 신규면 비워두기)</label>
+  <input id="brand_id" placeholder="예: brand_1787832766648">
+  <label>브랜드 설명 (신규 등록시)</label>
+  <textarea id="brand_description" placeholder="예: 빨강·노랑을 주 색상으로 한 선글라스 낀 피자 마스코트, 3D 렌더링, 정면 전신, 흰 배경"></textarea>
+  <button class="btn-primary" onclick="doCharacter()">캐릭터 만들기 / 불러오기</button>
+  <div id="char_loading" class="loading" style="display:none">생성 중... (최대 1분 정도 걸려요)</div>
+  <div id="char_error" class="error"></div>
+  <div id="char_result" class="result" style="display:none">
+    <img id="char_image" src="">
+    <div style="margin-top:8px;">
+      <button class="btn-primary" onclick="approveCharacter()">✅ 이 캐릭터 좋아요, 다음으로</button>
+    </div>
+    <div style="margin-top:12px; border-top:1px solid #ddd; padding-top:10px;">
+      <label>수정하고 싶으면 — 카테고리</label>
+      <select id="edit_category">
+        <option value="">선택</option>
+        <option value="색상">색상</option>
+        <option value="표정">표정</option>
+        <option value="포즈">포즈</option>
+        <option value="스타일">스타일</option>
+        <option value="기타">기타</option>
+      </select>
+      <label>수정 지시</label>
+      <input id="edit_instruction" placeholder="예: 귀를 더 크게 해줘">
+      <button class="btn-secondary" onclick="doCharacterEdit()">🔄 이 캐릭터 기준으로 다시 만들기</button>
+    </div>
+  </div>
+</div>
+
+<!-- STEP 2: 대본 -->
+<div class="step disabled" id="step2">
+  <h2>2단계. 대본</h2>
+  <label>이번 영상 주제</label>
+  <input id="topic" placeholder="예: 신메뉴 트러플크림 피자 출시 기념 20% 할인">
+  <label>목표 길이 (초)</label>
+  <input id="target_length_sec" type="number" value="15">
+  <label>대본에 반드시 들어가야 할 키워드 (쉼표로 구분)</label>
+  <input id="must_include_keywords" placeholder="예: 트러플크림 피자, 20% 할인">
+  <button class="btn-primary" onclick="doScript()">대본 만들기</button>
+  <div id="script_loading" class="loading" style="display:none">대본 쓰는 중...</div>
+  <div id="script_error" class="error"></div>
+  <div id="script_result" class="result" style="display:none">
+    <div id="script_text" style="white-space:pre-wrap;"></div>
+    <div style="margin-top:8px;">
+      <button class="btn-primary" onclick="approveScript()">✅ 이 대본 좋아요, 영상 만들기</button>
+    </div>
+    <div style="margin-top:12px; border-top:1px solid #ddd; padding-top:10px;">
+      <label>수정하고 싶으면 — 톤/타깃/강조포인트/금지어 등</label>
+      <input id="script_feedback" placeholder="예: 더 발랄한 톤으로, 20대 타깃으로">
+      <button class="btn-secondary" onclick="doScriptRetry()">🔄 이 피드백으로 다시 쓰기</button>
+    </div>
+  </div>
+</div>
+
+<!-- STEP 3: 영상 -->
+<div class="step disabled" id="step3">
+  <h2>3단계. 영상</h2>
+  <button class="btn-primary" id="render_btn" onclick="doRender()">영상 만들기 (시간 좀 걸려요)</button>
+  <div id="render_loading" class="loading" style="display:none">영상 생성 중... (1~수 분 걸릴 수 있어요, 창을 닫지 마세요)</div>
+  <div id="render_error" class="error"></div>
+  <div id="render_result" class="result" style="display:none">
+    <video id="final_video" controls></video>
+    <div style="margin-top:8px;">
+      <a id="final_link" href="" target="_blank">새 창에서 열기</a>
+    </div>
+    <div style="margin-top:12px; border-top:1px solid #ddd; padding-top:10px;">
+      <label>마음에 안 들면 — 원하는 것 (prompt에 반영)</label>
+      <input id="video_feedback_want" placeholder="예: 캐릭터 얼굴이 잘 보이게">
+      <label>피하고 싶은 것 (negative_prompt에 반영)</label>
+      <input id="video_feedback_avoid" placeholder="예: 빠른 카메라 워크">
+      <button class="btn-secondary" onclick="doRenderRetry()">🔄 이 피드백으로 다시 만들기</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let state = { brand_id: "", image_url: "", example_script: null, narration: "" };
+
+async function callApi(path, body) {
+  const resp = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await resp.json();
+  if (data.error) throw new Error(data.error);
+  return data;
+}
+
+function show(id) { document.getElementById(id).style.display = ""; }
+function hide(id) { document.getElementById(id).style.display = "none"; }
+function setText(id, t) { document.getElementById(id).textContent = t; }
+
+async function doCharacter() {
+  hide("char_result"); setText("char_error", ""); show("char_loading");
+  try {
+    const body = { brand_id: document.getElementById("brand_id").value.trim(), brand_description: document.getElementById("brand_description").value };
+    const data = await callApi("/api/character", body);
+    state.brand_id = data.brand_id; state.image_url = data.image_url; state.example_script = data.example_script;
+    document.getElementById("char_image").src = data.image_url;
+    show("char_result");
+  } catch (e) { setText("char_error", "에러: " + e.message); }
+  hide("char_loading");
+}
+
+async function doCharacterEdit() {
+  hide("char_result"); setText("char_error", ""); show("char_loading");
+  try {
+    const body = {
+      brand_id: "", brand_description: document.getElementById("brand_description").value,
+      edit_category: document.getElementById("edit_category").value,
+      edit_instruction: document.getElementById("edit_instruction").value,
+      base_image_url: state.image_url,
+    };
+    const data = await callApi("/api/character", body);
+    state.brand_id = data.brand_id; state.image_url = data.image_url; state.example_script = data.example_script;
+    document.getElementById("char_image").src = data.image_url;
+    show("char_result");
+  } catch (e) { setText("char_error", "에러: " + e.message); }
+  hide("char_loading");
+}
+
+function approveCharacter() {
+  document.getElementById("step2").classList.remove("disabled");
+  document.getElementById("step2").scrollIntoView({ behavior: "smooth" });
+}
+
+async function doScript() {
+  hide("script_result"); setText("script_error", ""); show("script_loading");
+  try {
+    const body = {
+      brand_id: state.brand_id,
+      topic: document.getElementById("topic").value,
+      target_length_sec: Number(document.getElementById("target_length_sec").value),
+      must_include_keywords: document.getElementById("must_include_keywords").value,
+      example_script: state.example_script,
+    };
+    state.target_length_sec = body.target_length_sec;
+    const data = await callApi("/api/script", body);
+    state.narration = data.narration;
+    setText("script_text", data.narration);
+    show("script_result");
+  } catch (e) { setText("script_error", "에러: " + e.message); }
+  hide("script_loading");
+}
+
+async function doScriptRetry() {
+  hide("script_result"); setText("script_error", ""); show("script_loading");
+  try {
+    const body = {
+      brand_id: state.brand_id,
+      topic: document.getElementById("topic").value,
+      target_length_sec: Number(document.getElementById("target_length_sec").value),
+      must_include_keywords: document.getElementById("must_include_keywords").value,
+      example_script: state.example_script,
+      script_feedback: document.getElementById("script_feedback").value,
+    };
+    const data = await callApi("/api/script", body);
+    state.narration = data.narration;
+    setText("script_text", data.narration);
+    show("script_result");
+  } catch (e) { setText("script_error", "에러: " + e.message); }
+  hide("script_loading");
+}
+
+function approveScript() {
+  document.getElementById("step3").classList.remove("disabled");
+  document.getElementById("step3").scrollIntoView({ behavior: "smooth" });
+}
+
+async function doRender() {
+  hide("render_result"); setText("render_error", ""); show("render_loading");
+  try {
+    const body = {
+      brand_id: state.brand_id, image_url: state.image_url,
+      narration: state.narration, target_length_sec: state.target_length_sec,
+    };
+    const data = await callApi("/api/render", body);
+    document.getElementById("final_video").src = data.final_video_url;
+    document.getElementById("final_link").href = data.final_video_url;
+    show("render_result");
+  } catch (e) { setText("render_error", "에러: " + e.message); }
+  hide("render_loading");
+}
+
+async function doRenderRetry() {
+  hide("render_result"); setText("render_error", ""); show("render_loading");
+  try {
+    const body = {
+      brand_id: state.brand_id, image_url: state.image_url,
+      narration: state.narration, target_length_sec: state.target_length_sec,
+      video_feedback_want: document.getElementById("video_feedback_want").value,
+      video_feedback_avoid: document.getElementById("video_feedback_avoid").value,
+    };
+    const data = await callApi("/api/render", body);
+    document.getElementById("final_video").src = data.final_video_url;
+    document.getElementById("final_link").href = data.final_video_url;
+    show("render_result");
+  } catch (e) { setText("render_error", "에러: " + e.message); }
+  hide("render_loading");
+}
+</script>
+</body>
+</html>
