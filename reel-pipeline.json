@@ -200,7 +200,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const f = $('1. 시작 (폼)').item.json;\nconst d = $json;\nconst attempt = d.script_attempt || 0;\nconst failReason = d.script_fail_reason || '';\nconst example = d.example_script || '(예시 없음, 자연스러운 홍보 톤으로 자유롭게)';\nconst rate = 4; // 초당 발화 글자수 가정\nconst maxChars = Math.round(f.target_length_sec * rate);\nconst keywords = (f.must_include_keywords || '').split(',').map(s => s.trim()).filter(Boolean);\n\nlet extra = '';\nif (attempt > 0 && failReason) extra = `\\n\\n[이전 시도 문제점 — 반드시 고쳐서 다시 써줘]\\n${failReason}`;\nif (attempt > 0 && f.script_feedback) extra += `\\n\\n[사용자 수정 요청 — 톤/타깃/강조/금지어]\\n${f.script_feedback}`;\n\nconst prompt = `너는 브랜드 홍보 짧은 영상의 나레이션 대본을 쓰는 카피라이터다.\\n없는 사실을 지어내지 마라.\\n${keywords.length ? `다음 키워드는 대본에 반드시 그대로 포함해라: ${keywords.join(', ')}\\n` : ''}총 글자수는 ${maxChars}자 이내로, 실제 사람이 말하듯 자연스러운 구어체 문장으로 써라.\\n출력은 나레이션 문장만, 다른 설명·따옴표·마크다운 없이 순수 텍스트로만 출력해라.\\n\\n[예시 대본 — 톤 참고용]\\n${example}\\n\\n[주제]\\n${f.topic}${extra}`;\n\nconst body = { model: 'openai/gpt-5', messages: [{ role: 'user', content: prompt }] };\nreturn [{ json: { ...d, requestBody: JSON.stringify(body), script_attempt: attempt, max_chars: maxChars, must_include_keywords: keywords } }];"
+        "jsCode": "const f = $('1. 시작 (폼)').item.json;\nconst d = $json;\nconst attempt = d.script_attempt || 0;\nconst failReason = d.script_fail_reason || '';\nconst example = d.example_script || '(예시 없음, 자연스러운 홍보 톤으로 자유롭게)';\nconst rate = 4; // 초당 발화 글자수 가정\nconst maxChars = Math.round(f.target_length_sec * rate);\nconst keywords = (f.must_include_keywords || '').split(',').map(s => s.trim()).filter(Boolean);\n\nlet extra = '';\nif (attempt > 0 && failReason) extra = `\\n\\n[이전 시도 문제점 — 반드시 고쳐서 다시 써줘]\\n${failReason}`;\n// attempt 상관없이 항상 반영 — 예전엔 attempt>0일 때만 넣어서 재실행 첫 시도에서 script_feedback이 조용히 씹히는 버그가 있었음\nif (f.script_feedback) extra += `\\n\\n[사용자 수정 요청 — 톤/타깃/강조/금지어]\\n${f.script_feedback}`;\n\nconst prompt = `너는 브랜드 홍보 짧은 영상의 나레이션 대본을 쓰는 카피라이터다.\\n없는 사실을 지어내지 마라.\\n${keywords.length ? `다음 키워드는 대본에 반드시 그대로 포함해라: ${keywords.join(', ')}\\n` : ''}총 글자수는 ${maxChars}자 이내로, 실제 사람이 말하듯 자연스러운 구어체 문장으로 써라.\\n출력은 나레이션 문장만, 다른 설명·따옴표·마크다운 없이 순수 텍스트로만 출력해라.\\n\\n[예시 대본 — 톤 참고용]\\n${example}\\n\\n[주제]\\n${f.topic}${extra}`;\n\nconst body = { model: 'openai/gpt-5', messages: [{ role: 'user', content: prompt }] };\nreturn [{ json: { ...d, requestBody: JSON.stringify(body), script_attempt: attempt, max_chars: maxChars, must_include_keywords: keywords } }];"
       },
       "id": "n8a-build-script-prompt",
       "name": "8a. 대본 생성 요청 만들기",
@@ -499,7 +499,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const d = $('13c. task_id 추출').item.json;\nconst task = items[0].json?.data || items[0].json;\nconst status = task?.task_status || task?.status || '';\nconst videoUrl = task?.task_result?.videos?.[0]?.url || '';\nreturn [{ json: { ...d, status, video_url: videoUrl } }];"
+        "jsCode": "const d = $('13c. task_id 추출').item.json;\nconst task = items[0].json?.data || items[0].json;\nconst status = task?.task_status || task?.status || '';\nconst videoObj = (task?.task_result?.videos || [{}])[0];\nconst videoUrl = videoObj?.url || '';\n// 2026-08 실제 계정 테스트로 확인: video-extend에 넘길 값은 이 완료 응답의 videos[0] id (task_id 아님)\nconst currentVideoId = videoObj?.id || videoObj?.video_id || videoObj?.videoId || '';\nreturn [{ json: { ...d, status, video_url: videoUrl, current_video_id: currentVideoId } }];"
       },
       "id": "n13f-extract-status",
       "name": "13f. 상태 추출",
@@ -575,7 +575,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const f = $('1. 시작 (폼)').item.json;\nconst d = $json;\nconst i = d.extend_index;\nconst seg = d.segments[i];\nconst attempt = d.extend_attempt || 0;\nlet prompt = seg.video_prompt;\nlet negativePrompt = 'blurry, low quality, distorted, extra limbs, watermark';\nif (attempt > 0 && f.video_feedback_want) prompt += `. ${f.video_feedback_want}`;\nif (attempt > 0 && f.video_feedback_avoid) negativePrompt += `, ${f.video_feedback_avoid}`;\nconst body = { task_id: d.current_task_id, prompt, negative_prompt: negativePrompt, duration: '5', mode: 'std' };\nreturn [{ json: { ...d, requestBody: JSON.stringify(body) } }];"
+        "jsCode": "const f = $('1. 시작 (폼)').item.json;\nconst d = $json;\nconst i = d.extend_index;\nconst seg = d.segments[i];\nconst attempt = d.extend_attempt || 0;\nlet prompt = seg.video_prompt;\nlet negativePrompt = 'blurry, low quality, distorted, extra limbs, watermark';\nif (attempt > 0 && f.video_feedback_want) prompt += `. ${f.video_feedback_want}`;\nif (attempt > 0 && f.video_feedback_avoid) negativePrompt += `, ${f.video_feedback_avoid}`;\n// 2026-08 실제 계정 테스트로 확인: 필드명은 videoId (task_id 아님), 값은 13f/14f에서 뽑아둔 current_video_id\nconst body = { videoId: d.current_video_id, prompt, negative_prompt: negativePrompt, duration: '5', mode: 'std' };\nreturn [{ json: { ...d, requestBody: JSON.stringify(body) } }];"
       },
       "id": "n14a-build-extend-body",
       "name": "14a. 이어붙이기 요청 만들기",
@@ -600,7 +600,7 @@
       "typeVersion": 4.2,
       "position": [3400, -300],
       "notesInFlow": true,
-      "notes": "⚠️ 웹서치로 확인한 엔드포인트/필드(task_id, prompt, negative_prompt, duration, mode)이지 실제 계정으로 테스트 확인은 안 됨. 리전 도메인(api-singapore)도 motion-control과 같다고 가정한 것 — 안 되면 api.klingai.com으로 바꿔볼 것."
+      "notes": "✅ 2026-08 실제 계정 테스트로 확인 완료. 필드명은 videoId (처음엔 task_id로 잘못 넣어서 'videoId: must not be blank' 에러 났었음). 값은 13f/14f 노드가 완료 응답의 videos[0]에서 뽑아둔 current_video_id. 리전 도메인(api-singapore)도 실제 동작 확인됨."
     },
     {
       "parameters": {
@@ -629,7 +629,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const d = $('14c. task_id 갱신').item.json;\nconst task = items[0].json?.data || items[0].json;\nconst status = task?.task_status || task?.status || '';\nconst videoUrl = task?.task_result?.videos?.[0]?.url || '';\nreturn [{ json: { ...d, status, video_url: videoUrl } }];"
+        "jsCode": "const d = $('14c. task_id 갱신').item.json;\nconst task = items[0].json?.data || items[0].json;\nconst status = task?.task_status || task?.status || '';\nconst videoObj = (task?.task_result?.videos || [{}])[0];\nconst videoUrl = videoObj?.url || '';\n// 다음 이어붙이기 구간에서 쓸 videoId 갱신 (Extend 성공할 때마다 새 videoId로 바뀜)\nconst currentVideoId = videoObj?.id || videoObj?.video_id || videoObj?.videoId || '';\nreturn [{ json: { ...d, status, video_url: videoUrl, current_video_id: currentVideoId } }];"
       },
       "id": "n14f-extract-status",
       "name": "14f. 상태 추출",
