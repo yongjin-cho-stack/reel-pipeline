@@ -325,6 +325,7 @@ def api_script(body: dict):
             body["topic"], body["target_length_sec"], keywords,
             body.get("example_script"), body.get("script_feedback"),
             reel_pipeline.call_llm_openrouter,
+            body.get("previous_narration"),
         )
         reel_pipeline.save_example_script(body["brand_id"], narration)
         return {"narration": narration}
@@ -334,12 +335,17 @@ def api_script(body: dict):
 
 @app.post("/api/render")
 def api_render(body: dict):
+    """body에 이미 만들어둔 segments(나레이션 오디오+영상프롬프트 포함)를 주면 그걸 그대로 재사용하고
+    Kling 렌더링만 다시 한다 — 영상 피드백만 바뀐 재시도에서 TTS/LLM을 매번 새로 돈 내고
+    다시 만드는 낭비를 없애기 위함. segments가 없으면(최초 요청) 처음부터 다 만든다."""
     import reel_pipeline
     try:
-        total_segments, durations = reel_pipeline.calc_segments(body["target_length_sec"])
-        segments = reel_pipeline.split_narration(body["narration"], total_segments, durations)
-        segments = reel_pipeline.generate_narration_audio(segments, body["brand_id"], reel_pipeline.call_tts_google)
-        segments = reel_pipeline.generate_video_prompts(segments, total_segments, reel_pipeline.call_llm_openrouter)
+        segments = body.get("segments")
+        if not segments:
+            total_segments, durations = reel_pipeline.calc_segments(body["target_length_sec"])
+            segments = reel_pipeline.split_narration(body["narration"], total_segments, durations)
+            segments = reel_pipeline.generate_narration_audio(segments, body["brand_id"], reel_pipeline.call_tts_google)
+            segments = reel_pipeline.generate_video_prompts(segments, total_segments, reel_pipeline.call_llm_openrouter)
         video_url = reel_pipeline.render_video(
             body["image_url"], segments,
             body.get("video_feedback_want"), body.get("video_feedback_avoid"),
@@ -350,7 +356,21 @@ def api_render(body: dict):
         )
         final_bytes = reel_pipeline.merge_audio(video_url, segments)
         final_url = reel_pipeline.upload_final_video(final_bytes, body["brand_id"])
-        return {"final_video_url": final_url}
+        # segments를 같이 돌려줘서, 프론트가 다음 재시도 때 이걸 그대로 다시 보낼 수 있게 함
+        return {"final_video_url": final_url, "segments": segments}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ============================================================
+# RITA 연동용 Endpoint — n8n "AI 캐릭터 릴스 - multi-image2video" 워크플로우 어댑터
+# 일반 def: 내부에서 n8n 웹훅을 오래(수 분) 기다리며 호출하므로 스레드풀에서 돌게 함
+# ============================================================
+@app.post("/rita/reels")
+def rita_reels(body: dict):
+    import rita_reels_endpoint
+    try:
+        return rita_reels_endpoint.trigger_reels(body)
     except Exception as e:
         return {"error": str(e)}
 

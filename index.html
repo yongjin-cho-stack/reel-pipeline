@@ -38,6 +38,10 @@
   <div id="char_error" class="error"></div>
   <div id="char_result" class="result" style="display:none">
     <img id="char_image" src="">
+    <div id="brand_id_box" style="margin-top:8px; padding:8px 10px; background:#fff8e1; border:1px solid #e0c46c; border-radius:6px; display:flex; align-items:center; justify-content:space-between; gap:8px;">
+      <span style="font-size:13px;">이 브랜드ID를 저장해두세요 (다음에 이 캐릭터 재사용할 때 필요해요): <b id="brand_id_text"></b></span>
+      <button type="button" class="btn-secondary" style="margin:0; padding:4px 10px; font-size:12px; white-space:nowrap;" onclick="copyBrandId()">📋 복사</button>
+    </div>
     <div style="margin-top:8px;">
       <button class="btn-primary" onclick="approveCharacter()">✅ 이 캐릭터 좋아요, 다음으로</button>
     </div>
@@ -118,6 +122,12 @@ function show(id) { document.getElementById(id).style.display = ""; }
 function hide(id) { document.getElementById(id).style.display = "none"; }
 function setText(id, t) { document.getElementById(id).textContent = t; }
 
+function copyBrandId() {
+  const id = document.getElementById("brand_id_text").textContent;
+  if (!id) return;
+  navigator.clipboard.writeText(id).then(() => alert("복사했어요: " + id));
+}
+
 async function doCharacter() {
   hide("char_result"); setText("char_error", ""); show("char_loading");
   try {
@@ -125,6 +135,7 @@ async function doCharacter() {
     const data = await callApi("/api/character", body);
     state.brand_id = data.brand_id; state.image_url = data.image_url; state.example_script = data.example_script;
     document.getElementById("char_image").src = data.image_url;
+    setText("brand_id_text", data.brand_id);
     show("char_result");
   } catch (e) { setText("char_error", "에러: " + e.message); }
   hide("char_loading");
@@ -142,6 +153,7 @@ async function doCharacterEdit() {
     const data = await callApi("/api/character", body);
     state.brand_id = data.brand_id; state.image_url = data.image_url; state.example_script = data.example_script;
     document.getElementById("char_image").src = data.image_url;
+    setText("brand_id_text", data.brand_id);
     show("char_result");
   } catch (e) { setText("char_error", "에러: " + e.message); }
   hide("char_loading");
@@ -165,6 +177,7 @@ async function doScript() {
     state.target_length_sec = body.target_length_sec;
     const data = await callApi("/api/script", body);
     state.narration = data.narration;
+    state.segments = null; // 대본이 바뀌었으니 이전에 만들어둔 나레이션음성/영상프롬프트는 이제 못 씀
     setText("script_text", data.narration);
     show("script_result");
   } catch (e) { setText("script_error", "에러: " + e.message); }
@@ -181,9 +194,11 @@ async function doScriptRetry() {
       must_include_keywords: document.getElementById("must_include_keywords").value,
       example_script: state.example_script,
       script_feedback: document.getElementById("script_feedback").value,
+      previous_narration: state.narration,
     };
     const data = await callApi("/api/script", body);
     state.narration = data.narration;
+    state.segments = null; // 대본이 바뀌었으니 이전에 만들어둔 나레이션음성/영상프롬프트는 이제 못 씀
     setText("script_text", data.narration);
     show("script_result");
   } catch (e) { setText("script_error", "에러: " + e.message); }
@@ -203,6 +218,7 @@ async function doRender() {
       narration: state.narration, target_length_sec: state.target_length_sec,
     };
     const data = await callApi("/api/render", body);
+    state.segments = data.segments; // 다음 재시도 때 나레이션음성/영상프롬프트 재사용하려고 저장
     document.getElementById("final_video").src = data.final_video_url;
     document.getElementById("final_link").href = data.final_video_url;
     show("render_result");
@@ -218,8 +234,10 @@ async function doRenderRetry() {
       narration: state.narration, target_length_sec: state.target_length_sec,
       video_feedback_want: document.getElementById("video_feedback_want").value,
       video_feedback_avoid: document.getElementById("video_feedback_avoid").value,
+      segments: state.segments, // 있으면 나레이션음성/영상프롬프트 재생성 안 하고 그대로 재사용 (과금 절약)
     };
     const data = await callApi("/api/render", body);
+    state.segments = data.segments;
     document.getElementById("final_video").src = data.final_video_url;
     document.getElementById("final_link").href = data.final_video_url;
     show("render_result");

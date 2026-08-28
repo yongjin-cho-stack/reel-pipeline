@@ -1,0 +1,926 @@
+{
+  "name": "브랜드 캐릭터 숏츠 파이프라인 (등록+영상생성 통합)",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "브랜드 캐릭터 숏츠 만들기",
+        "formDescription": "brand_id를 비워두면 새 브랜드 등록부터 진행하고, 이미 있는 brand_id를 넣으면 그 캐릭터를 그대로 재사용해서 영상만 만듭니다.",
+        "formFields": {
+          "values": [
+            { "fieldLabel": "brand_id", "fieldType": "text", "placeholder": "기존 브랜드 재사용시에만 입력, 신규면 비워두기", "requiredField": false },
+            { "fieldLabel": "brand_description", "fieldType": "textarea", "placeholder": "신규 등록시: 예) 파란색과 흰색 곰 마스코트, 3D 렌더링, 정면 전신, 흰 배경", "requiredField": false },
+            { "fieldLabel": "edit_category", "fieldType": "dropdown", "fieldOptions": { "values": [ { "option": "" }, { "option": "색상" }, { "option": "표정" }, { "option": "포즈" }, { "option": "스타일" }, { "option": "기타" } ] }, "requiredField": false },
+            { "fieldLabel": "edit_instruction", "fieldType": "text", "placeholder": "캐릭터 수정 원할 때만: 예) 귀를 더 크게 해줘", "requiredField": false },
+            { "fieldLabel": "base_image_url", "fieldType": "text", "placeholder": "캐릭터 수정 원할 때만: 직전 결과 이미지 URL", "requiredField": false },
+            { "fieldLabel": "topic", "fieldType": "text", "placeholder": "이번 영상 주제, 예) 신메뉴 매콤달콤 치킨 출시", "requiredField": true },
+            { "fieldLabel": "must_include_keywords", "fieldType": "text", "placeholder": "대본에 반드시 들어가야 할 키워드, 쉼표로 구분. 예: 트러플크림 피자, 20% 할인, 2주", "requiredField": false },
+            { "fieldLabel": "target_length_sec", "fieldType": "number", "requiredField": true },
+            { "fieldLabel": "script_feedback", "fieldType": "text", "placeholder": "대본 다시 쓸 때만: 톤/타깃/강조포인트/금지어 등", "requiredField": false },
+            { "fieldLabel": "video_feedback_want", "fieldType": "text", "placeholder": "영상 재시도 시에만: 원하는 것 (prompt에 추가됨). 예: 캐릭터 얼굴이 잘 보이게", "requiredField": false },
+            { "fieldLabel": "video_feedback_avoid", "fieldType": "text", "placeholder": "영상 재시도 시에만: 피하고 싶은 것 (negative_prompt에 추가됨). 예: 빠른 카메라 워크", "requiredField": false }
+          ]
+        },
+        "options": {}
+      },
+      "id": "n1-form-trigger",
+      "name": "1. 시작 (폼)",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2,
+      "position": [-3400, 0],
+      "webhookId": "reel-pipeline-start"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            { "leftValue": "={{ $json.brand_id }}", "rightValue": "", "operator": { "type": "string", "operation": "equals" } }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n2-if-new-brand",
+      "name": "2. 신규 브랜드인가?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-3200, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const f = $('1. 시작 (폼)').item.json;\nconst isEdit = !!(f.edit_instruction && f.base_image_url);\nlet content;\nif (isEdit) {\n  const category = f.edit_category || '기타';\n  content = [\n    { type: 'text', text: `이 이미지에서 ${category}만 다음과 같이 바꿔줘: ${f.edit_instruction}. 나머지 요소는 최대한 그대로 유지해줘.` },\n    { type: 'image_url', image_url: { url: f.base_image_url } }\n  ];\n} else {\n  content = `다음 설명에 맞는 브랜드 캐릭터 마스코트 이미지를 생성해줘. 정면을 바라보는 전신 포즈, 단색(흰색) 배경, 다른 요소 없이 캐릭터만. 설명: ${f.brand_description}`;\n}\nconst body = { model: 'google/gemini-3.1-flash-image-preview', modalities: ['image', 'text'], messages: [{ role: 'user', content }] };\nreturn [{ json: { requestBody: JSON.stringify(body) } }];"
+      },
+      "id": "n3a-build-image-body",
+      "name": "3a. 이미지 생성 요청 만들기",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-3000, -220]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.requestBody }}",
+        "options": {}
+      },
+      "id": "n3b-generate-image",
+      "name": "3b. 캐릭터 이미지 생성 (OpenRouter)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-2800, -220],
+      "notesInFlow": true,
+      "notes": "Header Auth: Authorization: Bearer <OPENROUTER_KEY>"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = items[0].json;\nlet dataUrl = '';\ntry {\n  const msg = data.choices?.[0]?.message;\n  if (msg?.images?.[0]?.image_url?.url) dataUrl = msg.images[0].image_url.url;\n  else if (typeof msg?.content === 'string' && msg.content.startsWith('data:image')) dataUrl = msg.content;\n} catch (e) {}\nif (!dataUrl.startsWith('data:image')) throw new Error('OpenRouter 응답에서 이미지를 못 찾았어요: ' + JSON.stringify(data).slice(0, 500));\nconst match = dataUrl.match(/^data:(image\\/[a-zA-Z0-9.+-]+);base64,(.+)$/);\nconst mimeType = match ? match[1] : 'image/png';\nconst base64Data = match ? match[2] : dataUrl.split(',')[1];\nconst buffer = Buffer.from(base64Data, 'base64');\nconst ext = (mimeType.split('/')[1] || 'png').replace('+xml', '');\nconst binaryData = await this.helpers.prepareBinaryData(buffer, `character.${ext}`, mimeType);\nreturn [{ json: { mime_type: mimeType, ext }, binary: { character_image: binaryData } }];"
+      },
+      "id": "n3c-decode-image",
+      "name": "3c. 이미지 디코딩",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-2600, -220]
+    },
+    {
+      "parameters": {
+        "jsCode": "const f = $('1. 시작 (폼)').item.json;\nconst brandId = 'brand_' + Date.now();\nreturn [{ json: { brand_id: brandId, ext: $json.ext, mime_type: $json.mime_type, storage_path: `${brandId}.${$json.ext}` }, binary: items[0].binary }];"
+      },
+      "id": "n3d-build-brand-id",
+      "name": "3d. 브랜드ID 발급",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-2400, -220]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SUPABASE_URL }}/storage/v1/object/brand-characters/{{ $json.storage_path }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBinaryData": true,
+        "binaryPropertyName": "character_image",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name": "Content-Type", "value": "={{ $json.mime_type }}" }, { "name": "x-upsert", "value": "true" } ] },
+        "options": {}
+      },
+      "id": "n3e-upload-image",
+      "name": "3e. 이미지 Supabase 업로드",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-2200, -220],
+      "notesInFlow": true,
+      "notes": "Storage 버킷 'brand-characters' (public 읽기) 미리 생성 필요"
+    },
+    {
+      "parameters": {
+        "jsCode": "const f = $('1. 시작 (폼)').item.json;\nconst id = $('3d. 브랜드ID 발급').item.json;\nconst imageUrl = `${$vars.SUPABASE_URL}/storage/v1/object/public/brand-characters/${id.storage_path}`;\nconst body = { brand_id: id.brand_id, description: f.brand_description, image_url: imageUrl, example_script: null, updated_at: new Date().toISOString() };\nreturn [{ json: { requestBody: JSON.stringify(body), brand_id: id.brand_id, image_url: imageUrl, example_script: null } }];"
+      },
+      "id": "n3f-build-db-body",
+      "name": "3f. 저장 레코드 만들기",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-2000, -220]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/characters",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.requestBody }}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name": "Prefer", "value": "resolution=merge-duplicates" }, { "name": "Content-Type", "value": "application/json" } ] },
+        "options": {}
+      },
+      "id": "n3g-save-record",
+      "name": "3g. 브랜드ID로 영구 저장",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-1800, -220],
+      "notesInFlow": true,
+      "notes": "테이블 'characters' 미리 생성 필요: brand_id text unique, description text, image_url text, example_script text, updated_at timestamptz"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/characters?brand_id=eq.{{ $('1. 시작 (폼)').item.json.brand_id }}&select=*",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "n4a-lookup-brand",
+      "name": "4a. 기존 브랜드 조회",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-3000, 220]
+    },
+    {
+      "parameters": {
+        "jsCode": "const row = items[0].json[0];\nif (!row) throw new Error('brand_id에 해당하는 캐릭터를 못 찾았어요. 등록부터 다시 하거나 brand_id를 확인하세요.');\nreturn [{ json: { brand_id: row.brand_id, image_url: row.image_url, example_script: row.example_script || null } }];"
+      },
+      "id": "n4b-extract-brand",
+      "name": "4b. 브랜드 데이터 정리",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-2200, 220]
+    },
+    {
+      "parameters": {
+        "jsCode": "const b = $('3f. 저장 레코드 만들기').item.json;\nreturn [{ json: { brand_id: b.brand_id, image_url: b.image_url, example_script: b.example_script || null } }];"
+      },
+      "id": "n3h-normalize-new",
+      "name": "3h. 신규 결과 정리",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1600, -220]
+    },
+    {
+      "parameters": { "mode": "append", "options": {} },
+      "id": "n5-merge",
+      "name": "5. 캐릭터 확보 완료 (합류)",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [-1400, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const target = Number($('1. 시작 (폼)').item.json.target_length_sec);\nconst segmentsNeeded = Math.max(0, Math.ceil((target - 10) / 4.5));\nconst totalSegments = segmentsNeeded + 1; // 1차 + extend 횟수\nreturn [{ json: { ...items[0].json, target_length_sec: target, segments_needed_extend: segmentsNeeded, total_segments: totalSegments } }];"
+      },
+      "id": "n6-calc-repeats",
+      "name": "6. 반복 횟수 계산",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1200, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const f = $('1. 시작 (폼)').item.json;\nconst d = $json;\nconst attempt = d.script_attempt || 0;\nconst failReason = d.script_fail_reason || '';\nconst example = d.example_script || '(예시 없음, 자연스러운 홍보 톤으로 자유롭게)';\nconst rate = 4; // 초당 발화 글자수 가정\nconst maxChars = Math.round(f.target_length_sec * rate);\nconst keywords = (f.must_include_keywords || '').split(',').map(s => s.trim()).filter(Boolean);\n\nlet extra = '';\nif (attempt > 0 && failReason) extra = `\\n\\n[이전 시도 문제점 — 반드시 고쳐서 다시 써줘]\\n${failReason}`;\nif (attempt > 0 && f.script_feedback) extra += `\\n\\n[사용자 수정 요청 — 톤/타깃/강조/금지어]\\n${f.script_feedback}`;\n\nconst prompt = `너는 브랜드 홍보 짧은 영상의 나레이션 대본을 쓰는 카피라이터다.\\n없는 사실을 지어내지 마라.\\n${keywords.length ? `다음 키워드는 대본에 반드시 그대로 포함해라: ${keywords.join(', ')}\\n` : ''}총 글자수는 ${maxChars}자 이내로, 실제 사람이 말하듯 자연스러운 구어체 문장으로 써라.\\n출력은 나레이션 문장만, 다른 설명·따옴표·마크다운 없이 순수 텍스트로만 출력해라.\\n\\n[예시 대본 — 톤 참고용]\\n${example}\\n\\n[주제]\\n${f.topic}${extra}`;\n\nconst body = { model: 'openai/gpt-5', messages: [{ role: 'user', content: prompt }] };\nreturn [{ json: { ...d, requestBody: JSON.stringify(body), script_attempt: attempt, max_chars: maxChars, must_include_keywords: keywords } }];"
+      },
+      "id": "n8a-build-script-prompt",
+      "name": "8a. 대본 생성 요청 만들기",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-600, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.requestBody }}",
+        "options": {}
+      },
+      "id": "n8b-generate-script",
+      "name": "8b. 대본 쓰기 (OpenRouter LLM)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-400, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const prev = $('8a. 대본 생성 요청 만들기').item.json;\nconst data = items[0].json;\nconst narration = (data.choices?.[0]?.message?.content || '').trim();\nconst f = $('1. 시작 (폼)').item.json;\n\n// 코드 검증 1: 사용자가 지정한 필수 키워드가 대본에 그대로 들어갔는지 대조\nconst keywords = prev.must_include_keywords || [];\nconst missingKeywords = keywords.filter(k => !narration.includes(k));\n\n// 코드 검증 2: 글자수 ÷ 발화속도로 낭독 길이 추정, 목표 길이와 비교 (±20% 허용)\nconst rate = 4;\nconst estSec = narration.length / rate;\nconst diffRatio = Math.abs(estSec - f.target_length_sec) / f.target_length_sec;\n\nconst problems = [];\nif (missingKeywords.length) problems.push(`필수 키워드(${missingKeywords.join(', ')})가 대본에 안 들어감`);\nif (diffRatio > 0.2) problems.push(`예상 낭독 길이 ${estSec.toFixed(1)}초, 목표 ${f.target_length_sec}초와 차이가 큼 (글자수 조정 필요)`);\n\nconst passed = problems.length === 0;\nreturn [{ json: { ...prev, narration, passed, script_fail_reason: problems.join(' / '), script_attempt: prev.script_attempt + 1 } }];"
+      },
+      "id": "n8c-verify-script",
+      "name": "8c. 대본 확인 (코드)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-200, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [ { "leftValue": "={{ $json.passed }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } } ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n8d-if-script-ok",
+      "name": "8d. 대본 통과?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [ { "leftValue": "={{ $json.script_attempt }}", "rightValue": 3, "operator": { "type": "number", "operation": "lt" } } ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n8e-if-retry-left",
+      "name": "8e. 재시도 남았나 (최대2)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [0, 200]
+    },
+    {
+      "parameters": {
+        "assignments": { "assignments": [ { "name": "failed_stage", "type": "string", "value": "대본 검증 (2회 재시도 후 실패)" }, { "name": "script_fail_reason", "type": "string", "value": "={{ $json.script_fail_reason }}" } ] },
+        "options": {}
+      },
+      "id": "n8f-output-fail",
+      "name": "8f. 대본 실패 → 사람에게",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $json;\nconst body = { brand_id: d.brand_id, example_script: d.narration, updated_at: new Date().toISOString() };\nreturn [{ json: { ...d, requestBody: JSON.stringify(body) } }];"
+      },
+      "id": "n9a-build-example-body",
+      "name": "9a. 예시 저장 레코드 만들기",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [200, -100]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SUPABASE_URL }}/rest/v1/characters",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.requestBody }}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name": "Prefer", "value": "resolution=merge-duplicates" }, { "name": "Content-Type", "value": "application/json" } ] },
+        "options": {}
+      },
+      "id": "n9b-save-example",
+      "name": "9b. 예시로 저장",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [400, -100]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $('9a. 예시 저장 레코드 만들기').item.json;\nconst total = d.total_segments;\n// 1차 영상은 10초, 이후 Extend는 각 5초로 요청하므로 그 비율만큼 글자수를 배분 (균등 분배 X)\nconst durations = [10, ...Array(Math.max(0, total - 1)).fill(5)];\nconst sumDur = durations.reduce((a, b) => a + b, 0);\nconst sentences = d.narration.split(/(?<=[.!?。])\\s+/).filter(s => s.trim());\nconst totalChars = sentences.reduce((a, s) => a + s.length, 0) || 1;\n\nconst segments = [];\nlet si = 0;\nfor (let i = 0; i < total; i++) {\n  const budget = totalChars * (durations[i] / sumDur);\n  const remainingSegments = total - i;\n  const chunk = [];\n  let used = 0;\n  while (si < sentences.length) {\n    const s = sentences[si];\n    if (remainingSegments === 1) { chunk.push(s); si++; continue; } // 마지막 구간은 남은 거 다 담기\n    if (used === 0 || used + s.length <= budget * 1.3) { chunk.push(s); used += s.length; si++; }\n    else break;\n  }\n  segments.push({ index: i, narration_text: chunk.join(' ').trim() || sentences[sentences.length - 1] || d.narration, target_duration_s: durations[i] });\n}\nreturn [{ json: { ...d, segments } }];"
+      },
+      "id": "n10-split-narration",
+      "name": "10. 나레이션 구간 분리",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, -100]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $json;\nconst i = d.tts_index || 0;\nconst seg = d.segments[i];\nconst body = {\n  input: { text: seg.narration_text },\n  voice: { languageCode: 'ko-KR', name: 'ko-KR-Neural2-A' },\n  audioConfig: { audioEncoding: 'MP3' }\n};\nreturn [{ json: { ...d, tts_index: i, requestBody: JSON.stringify(body) } }];"
+      },
+      "id": "n11a-build-tts-body",
+      "name": "11a. TTS 요청 만들기 (구간별)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, -100]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://texttospeech.googleapis.com/v1/text:synthesize",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.requestBody }}",
+        "options": { "timeout": 60000 }
+      },
+      "id": "n11b-tts-call",
+      "name": "11b. 나레이션 생성 (Google TTS)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1000, -100],
+      "notesInFlow": true,
+      "notes": "Google Cloud Text-to-Speech API. Header Auth: X-goog-api-key: <GOOGLE_TTS_API_KEY> (Google Cloud Console에서 Text-to-Speech API 활성화 후 API 키 발급). 응답이 audioContent(base64)로 옴 — URL 아님."
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = items[0].json;\nconst base64Data = data.audioContent;\nif (!base64Data) throw new Error('Google TTS 응답에서 audioContent를 못 찾았어요: ' + JSON.stringify(data).slice(0, 300));\nconst buffer = Buffer.from(base64Data, 'base64');\nconst binaryData = await this.helpers.prepareBinaryData(buffer, 'narration.mp3', 'audio/mpeg');\nreturn [{ json: {}, binary: { narration_audio: binaryData } }];"
+      },
+      "id": "n11b2-decode-audio",
+      "name": "11b2. 오디오 디코딩",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, -100]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SUPABASE_URL }}/storage/v1/object/narration-audio/{{ $('11a. TTS 요청 만들기 (구간별)').item.json.brand_id }}_{{ $('11a. TTS 요청 만들기 (구간별)').item.json.tts_index }}.mp3",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBinaryData": true,
+        "binaryPropertyName": "narration_audio",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name": "Content-Type", "value": "audio/mpeg" }, { "name": "x-upsert", "value": "true" } ] },
+        "options": {}
+      },
+      "id": "n11b3-upload-audio",
+      "name": "11b3. 오디오 Supabase 업로드",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1150, -100],
+      "notesInFlow": true,
+      "notes": "Storage 버킷 'narration-audio' (public 읽기) 미리 생성 필요"
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $('11a. TTS 요청 만들기 (구간별)').item.json;\n// 11b3가 업로드한 경로와 정확히 같은 규칙(brand_id_ttsIndex.mp3)으로 재계산\nconst audioUrl = `${$vars.SUPABASE_URL}/storage/v1/object/public/narration-audio/${d.brand_id}_${d.tts_index}.mp3`;\nconst segments = d.segments.map((s, idx) => idx === d.tts_index ? { ...s, audio_url: audioUrl } : s);\nreturn [{ json: { ...d, segments, tts_index: d.tts_index + 1 } }];"
+      },
+      "id": "n11c-collect-audio",
+      "name": "11c. 오디오 URL 저장",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, -100]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [ { "leftValue": "={{ $json.tts_index }}", "rightValue": "={{ $json.total_segments }}", "operator": { "type": "number", "operation": "lt" } } ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n11d-if-more-segments",
+      "name": "11d. 다음 구간 남았나?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1400, -100]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $json;\nconst segList = d.segments.map((s, i) => `구간${i}: ${s.narration_text}`).join('\\n');\nconst prompt = `아래는 짧은 홍보 영상의 나레이션을 시간 구간별로 나눈 것이다.\\n각 구간마다, 그 나레이션이 나올 때 화면에 어떤 장면이 나와야 하는지 영상 생성용 장면 묘사를 만들어라.\\n나레이션 문장을 그대로 옮기지 말고, 카메라/동작/표정 등 시각적 요소로 새로 써라 (영어로, 한 구간당 1문장).\\n출력은 반드시 아래 JSON 형식 그대로만 출력해라 (설명 없이):\\n{\"video_prompts\": [\"구간0 장면 묘사\", \"구간1 장면 묘사\", ...]}\\n구간 개수는 정확히 ${d.total_segments}개여야 한다.\\n\\n[나레이션 구간]\\n${segList}`;\nconst body = { model: 'openai/gpt-5', messages: [{ role: 'user', content: prompt }] };\nreturn [{ json: { ...d, requestBody: JSON.stringify(body) } }];"
+      },
+      "id": "n12a-build-vp-prompt",
+      "name": "12a. 구간별 영상 프롬프트 요청 만들기",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1600, -100]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.requestBody }}",
+        "options": {}
+      },
+      "id": "n12b-generate-vp",
+      "name": "12b. 구간별 영상 프롬프트 작성",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1800, -100]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $('12a. 구간별 영상 프롬프트 요청 만들기').item.json;\nconst raw = items[0].json.choices?.[0]?.message?.content || '{}';\nlet parsed;\ntry { parsed = JSON.parse(raw.replace(/^```json\\s*|```$/g, '').trim()); } catch (e) { parsed = { video_prompts: [] }; }\nconst prompts = parsed.video_prompts || [];\nconst passed = prompts.length === d.total_segments;\nconst segments = d.segments.map((s, i) => ({ ...s, video_prompt: prompts[i] || s.narration_text }));\nreturn [{ json: { ...d, segments, vp_passed: passed } }];"
+      },
+      "id": "n12c-verify-vp",
+      "name": "12c. 구간 수 확인 (코드)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, -100],
+      "notesInFlow": true,
+      "notes": "개수 안 맞아도 일단 진행 (있는 만큼 사용, 부족분은 나레이션 텍스트로 대체) — 실패시 완전히 멈추기보단 최대한 진행하도록 완화. 필요하면 여기 뒤에 8d/8e 같은 재시도 IF를 추가."
+    },
+    {
+      "parameters": {
+        "jsCode": "const f = $('1. 시작 (폼)').item.json;\nconst d = $json;\nconst seg0 = d.segments[0];\nconst attempt = d.video_attempt || 0;\nlet prompt = seg0.video_prompt;\nlet negativePrompt = 'blurry, low quality, distorted, extra limbs, watermark';\nif (attempt > 0 && f.video_feedback_want) prompt += `. ${f.video_feedback_want}`;\nif (attempt > 0 && f.video_feedback_avoid) negativePrompt += `, ${f.video_feedback_avoid}`;\nconst body = { model_name: 'kling-v2-6', image: d.image_url, prompt, negative_prompt: negativePrompt, duration: '10', mode: 'std' };\nreturn [{ json: { ...d, requestBody: JSON.stringify(body), video_attempt: attempt } }];"
+      },
+      "id": "n13a-build-video-body",
+      "name": "13a. 영상 생성(1차) 요청 만들기",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2200, -100]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api-singapore.klingai.com/v1/videos/image2video",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.requestBody }}",
+        "options": {}
+      },
+      "id": "n13b-submit-video",
+      "name": "13b. 영상 생성 (1차) 제출",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2400, -100]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $('13a. 영상 생성(1차) 요청 만들기').item.json;\nconst taskId = items[0].json?.data?.task_id || items[0].json?.data?.id || '';\nreturn [{ json: { ...d, current_task_id: String(taskId), extend_index: 1 } }];"
+      },
+      "id": "n13c-extract-task-id",
+      "name": "13c. task_id 추출",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2600, -100]
+    },
+    {
+      "parameters": { "amount": 10, "unit": "seconds" },
+      "id": "n13d-wait",
+      "name": "13d. 대기(10초)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [2800, -100]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api-singapore.klingai.com/v1/videos/image2video/{{ $json.current_task_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "n13e-poll-status",
+      "name": "13e. 상태 조회",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3000, -100]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $('13c. task_id 추출').item.json;\nconst task = items[0].json?.data || items[0].json;\nconst status = task?.task_status || task?.status || '';\nconst videoUrl = task?.task_result?.videos?.[0]?.url || '';\nreturn [{ json: { ...d, status, video_url: videoUrl } }];"
+      },
+      "id": "n13f-extract-status",
+      "name": "13f. 상태 추출",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3200, -100]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [ { "leftValue": "={{ $json.status }}", "rightValue": "succeed", "operator": { "type": "string", "operation": "contains" } } ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n13g-if-succeeded",
+      "name": "13g. 완료됐나?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3400, -100]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [ { "leftValue": "={{ $json.status }}", "rightValue": "fail", "operator": { "type": "string", "operation": "contains" } } ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n13h-if-failed",
+      "name": "13h. 실패했나?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3400, 100]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [ { "leftValue": "={{ $json.video_attempt }}", "rightValue": 3, "operator": { "type": "number", "operation": "lt" } } ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n13i-if-retry-left",
+      "name": "13i. 재시도 남았나 (최대3)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [3600, 250]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $json;\nreturn [{ json: { ...d, video_attempt: (d.video_attempt || 0) + 1 } }];"
+      },
+      "id": "n13j-bump-attempt",
+      "name": "13j. 재시도 카운트 올리고 다시 생성",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3800, 250]
+    },
+    {
+      "parameters": {
+        "assignments": { "assignments": [ { "name": "failed_stage", "type": "string", "value": "영상 생성(1차) — 3회 재시도 후 실패, 사람에게" } ] },
+        "options": {}
+      },
+      "id": "n13k-output-fail",
+      "name": "13k. 영상 생성 실패 → 사람에게",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [3800, 450]
+    },
+    {
+      "parameters": {
+        "jsCode": "const f = $('1. 시작 (폼)').item.json;\nconst d = $json;\nconst i = d.extend_index;\nconst seg = d.segments[i];\nconst attempt = d.extend_attempt || 0;\nlet prompt = seg.video_prompt;\nlet negativePrompt = 'blurry, low quality, distorted, extra limbs, watermark';\nif (attempt > 0 && f.video_feedback_want) prompt += `. ${f.video_feedback_want}`;\nif (attempt > 0 && f.video_feedback_avoid) negativePrompt += `, ${f.video_feedback_avoid}`;\nconst body = { task_id: d.current_task_id, prompt, negative_prompt: negativePrompt, duration: '5', mode: 'std' };\nreturn [{ json: { ...d, requestBody: JSON.stringify(body) } }];"
+      },
+      "id": "n14a-build-extend-body",
+      "name": "14a. 이어붙이기 요청 만들기",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3200, -300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api-singapore.klingai.com/v1/videos/video-extend",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.requestBody }}",
+        "options": {}
+      },
+      "id": "n14b-submit-extend",
+      "name": "14b. 이어붙이기 (Extend) 제출",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3400, -300],
+      "notesInFlow": true,
+      "notes": "⚠️ 웹서치로 확인한 엔드포인트/필드(task_id, prompt, negative_prompt, duration, mode)이지 실제 계정으로 테스트 확인은 안 됨. 리전 도메인(api-singapore)도 motion-control과 같다고 가정한 것 — 안 되면 api.klingai.com으로 바꿔볼 것."
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $('14a. 이어붙이기 요청 만들기').item.json;\nconst taskId = items[0].json?.data?.task_id || items[0].json?.data?.id || '';\nreturn [{ json: { ...d, current_task_id: String(taskId) } }];"
+      },
+      "id": "n14c-extract-task-id",
+      "name": "14c. task_id 갱신",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3600, -300]
+    },
+    { "parameters": { "amount": 10, "unit": "seconds" }, "id": "n14d-wait", "name": "14d. 대기(10초)", "type": "n8n-nodes-base.wait", "typeVersion": 1.1, "position": [3800, -300] },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api-singapore.klingai.com/v1/videos/video-extend/{{ $json.current_task_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "n14e-poll-status",
+      "name": "14e. 상태 조회",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [4000, -300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $('14c. task_id 갱신').item.json;\nconst task = items[0].json?.data || items[0].json;\nconst status = task?.task_status || task?.status || '';\nconst videoUrl = task?.task_result?.videos?.[0]?.url || '';\nreturn [{ json: { ...d, status, video_url: videoUrl } }];"
+      },
+      "id": "n14f-extract-status",
+      "name": "14f. 상태 추출",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4200, -300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [ { "leftValue": "={{ $json.status }}", "rightValue": "succeed", "operator": { "type": "string", "operation": "contains" } } ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n14g-if-succeeded",
+      "name": "14g. 이어붙이기 완료됐나?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [4400, -300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [ { "leftValue": "={{ $json.status }}", "rightValue": "fail", "operator": { "type": "string", "operation": "contains" } } ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n14g2-if-failed",
+      "name": "14g2. 실패했나?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [4400, -100]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [ { "leftValue": "={{ $json.extend_attempt || 0 }}", "rightValue": 2, "operator": { "type": "number", "operation": "lt" } } ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n14g3-if-retry-left",
+      "name": "14g3. 재시도 남았나 (최대2)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [4600, 50]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $json;\nreturn [{ json: { ...d, extend_attempt: (d.extend_attempt || 0) + 1 } }];"
+      },
+      "id": "n14g4-bump-attempt",
+      "name": "14g4. 재시도 카운트 올리고 다시 요청",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4800, 50]
+    },
+    {
+      "parameters": {
+        "assignments": { "assignments": [ { "name": "failed_stage", "type": "string", "value": "={{ '이어붙이기(Extend) 구간 ' + $json.extend_index + ' — 2회 재시도 후 실패, 사람에게' }}" } ] },
+        "options": {}
+      },
+      "id": "n14g5-output-fail",
+      "name": "14g5. 이어붙이기 실패 → 사람에게",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [4800, 250]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $json;\nreturn [{ json: { ...d, extend_index: d.extend_index + 1, extend_attempt: 0 } }];"
+      },
+      "id": "n14h-bump-index",
+      "name": "14h. 다음 구간으로",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4600, -300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [ { "leftValue": "={{ $json.extend_index }}", "rightValue": "={{ $json.total_segments }}", "operator": { "type": "number", "operation": "lt" } } ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "n14i-if-more-extends",
+      "name": "14i. 이어붙일 구간 남았나?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [4800, -300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $json;\nconst segs = d.segments.filter(s => s.audio_url).map(s => ({ audio_url: s.audio_url, target_duration_s: s.target_duration_s }));\nconst body = { video_url: d.video_url, segments: segs };\nreturn [{ json: { ...d, requestBody: JSON.stringify(body) } }];"
+      },
+      "id": "n15a-build-compose-body",
+      "name": "15a. 오디오 합성 요청 만들기",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5000, -100]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.FFMPEG_SERVER_URL }}/merge-audio",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.requestBody }}",
+        "options": {
+          "timeout": 120000,
+          "response": { "response": { "responseFormat": "file", "outputPropertyName": "final_video" } }
+        }
+      },
+      "id": "n15b-compose",
+      "name": "15b. 오디오 합성 (로컬 ffmpeg 서버)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [5200, -100],
+      "notesInFlow": true,
+      "notes": "server.py에 /merge-audio 엔드포인트 새로 추가함 (JSON body: video_url, segments). 응답이 영상 바이너리라서 responseFormat을 'file'로 받음 — Send Body 토글 켜져 있는지, Response Format이 'file'로 잡혀있는지 임포트 후 꼭 확인. $vars.FFMPEG_SERVER_URL은 Cloudflare 터널 URL(매번 바뀜)이라 n8n Variables에서 매번 갱신 필요."
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $json;\nconst brandId = $('6. 반복 횟수 계산').item.json.brand_id;\nreturn [{ json: { ...d, storage_path: `${brandId}_${Date.now()}.mp4` }, binary: items[0].binary }];"
+      },
+      "id": "n15c-build-final-path",
+      "name": "15c. 최종 파일명 만들기",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5400, -100]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SUPABASE_URL }}/storage/v1/object/final-videos/{{ $json.storage_path }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBinaryData": true,
+        "binaryPropertyName": "final_video",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name": "Content-Type", "value": "video/mp4" }, { "name": "x-upsert", "value": "true" } ] },
+        "options": {}
+      },
+      "id": "n15d-upload-final",
+      "name": "15d. 최종 영상 Supabase 업로드",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [5600, -100],
+      "notesInFlow": true,
+      "notes": "Storage 버킷 'final-videos' (public 읽기) 미리 생성 필요. ⚠️ Send Body 토글이 임포트 후 꺼져 있을 수 있음 — 켜고 Body Content Type을 'n8n Binary File', Input Data Field Name을 'final_video'로 확인."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "name": "brand_id", "type": "string", "value": "={{ $('6. 반복 횟수 계산').item.json.brand_id }}" },
+            { "name": "final_video_url", "type": "string", "value": "={{ $vars.SUPABASE_URL }}/storage/v1/object/public/final-videos/{{ $('15c. 최종 파일명 만들기').item.json.storage_path }}" },
+            { "name": "script_text", "type": "string", "value": "={{ $('8c. 대본 확인 (코드)').item.json.narration }}" },
+            { "name": "안내", "type": "string", "value": "소리까지 포함해서 확인하세요. 특정 구간이 마음에 안 들면 problem_segment_feedback 아이디어로 재실행(이번 MVP는 전체 재실행 구조), 대본이 문제면 script_feedback 채워서 재실행." }
+          ]
+        },
+        "options": {}
+      },
+      "id": "n16-final-output",
+      "name": "16. 완료 (최종 영상)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [5800, -100]
+    }
+  ],
+  "connections": {
+    "1. 시작 (폼)": { "main": [[{ "node": "2. 신규 브랜드인가?", "type": "main", "index": 0 }]] },
+    "2. 신규 브랜드인가?": {
+      "main": [
+        [{ "node": "3a. 이미지 생성 요청 만들기", "type": "main", "index": 0 }],
+        [{ "node": "4a. 기존 브랜드 조회", "type": "main", "index": 0 }]
+      ]
+    },
+    "3a. 이미지 생성 요청 만들기": { "main": [[{ "node": "3b. 캐릭터 이미지 생성 (OpenRouter)", "type": "main", "index": 0 }]] },
+    "3b. 캐릭터 이미지 생성 (OpenRouter)": { "main": [[{ "node": "3c. 이미지 디코딩", "type": "main", "index": 0 }]] },
+    "3c. 이미지 디코딩": { "main": [[{ "node": "3d. 브랜드ID 발급", "type": "main", "index": 0 }]] },
+    "3d. 브랜드ID 발급": { "main": [[{ "node": "3e. 이미지 Supabase 업로드", "type": "main", "index": 0 }]] },
+    "3e. 이미지 Supabase 업로드": { "main": [[{ "node": "3f. 저장 레코드 만들기", "type": "main", "index": 0 }]] },
+    "3f. 저장 레코드 만들기": { "main": [[{ "node": "3g. 브랜드ID로 영구 저장", "type": "main", "index": 0 }]] },
+    "3g. 브랜드ID로 영구 저장": { "main": [[{ "node": "3h. 신규 결과 정리", "type": "main", "index": 0 }]] },
+    "3h. 신규 결과 정리": { "main": [[{ "node": "5. 캐릭터 확보 완료 (합류)", "type": "main", "index": 0 }]] },
+    "4a. 기존 브랜드 조회": { "main": [[{ "node": "4b. 브랜드 데이터 정리", "type": "main", "index": 0 }]] },
+    "4b. 브랜드 데이터 정리": { "main": [[{ "node": "5. 캐릭터 확보 완료 (합류)", "type": "main", "index": 1 }]] },
+    "5. 캐릭터 확보 완료 (합류)": { "main": [[{ "node": "6. 반복 횟수 계산", "type": "main", "index": 0 }]] },
+    "6. 반복 횟수 계산": { "main": [[{ "node": "8a. 대본 생성 요청 만들기", "type": "main", "index": 0 }]] },
+    "8a. 대본 생성 요청 만들기": { "main": [[{ "node": "8b. 대본 쓰기 (OpenRouter LLM)", "type": "main", "index": 0 }]] },
+    "8b. 대본 쓰기 (OpenRouter LLM)": { "main": [[{ "node": "8c. 대본 확인 (코드)", "type": "main", "index": 0 }]] },
+    "8c. 대본 확인 (코드)": { "main": [[{ "node": "8d. 대본 통과?", "type": "main", "index": 0 }]] },
+    "8d. 대본 통과?": {
+      "main": [
+        [{ "node": "9a. 예시 저장 레코드 만들기", "type": "main", "index": 0 }],
+        [{ "node": "8e. 재시도 남았나 (최대2)", "type": "main", "index": 0 }]
+      ]
+    },
+    "8e. 재시도 남았나 (최대2)": {
+      "main": [
+        [{ "node": "8a. 대본 생성 요청 만들기", "type": "main", "index": 0 }],
+        [{ "node": "8f. 대본 실패 → 사람에게", "type": "main", "index": 0 }]
+      ]
+    },
+    "9a. 예시 저장 레코드 만들기": { "main": [[{ "node": "9b. 예시로 저장", "type": "main", "index": 0 }]] },
+    "9b. 예시로 저장": { "main": [[{ "node": "10. 나레이션 구간 분리", "type": "main", "index": 0 }]] },
+    "10. 나레이션 구간 분리": { "main": [[{ "node": "11a. TTS 요청 만들기 (구간별)", "type": "main", "index": 0 }]] },
+    "11a. TTS 요청 만들기 (구간별)": { "main": [[{ "node": "11b. 나레이션 생성 (Google TTS)", "type": "main", "index": 0 }]] },
+    "11b. 나레이션 생성 (Google TTS)": { "main": [[{ "node": "11b2. 오디오 디코딩", "type": "main", "index": 0 }]] },
+    "11b2. 오디오 디코딩": { "main": [[{ "node": "11b3. 오디오 Supabase 업로드", "type": "main", "index": 0 }]] },
+    "11b3. 오디오 Supabase 업로드": { "main": [[{ "node": "11c. 오디오 URL 저장", "type": "main", "index": 0 }]] },
+    "11c. 오디오 URL 저장": { "main": [[{ "node": "11d. 다음 구간 남았나?", "type": "main", "index": 0 }]] },
+    "11d. 다음 구간 남았나?": {
+      "main": [
+        [{ "node": "11a. TTS 요청 만들기 (구간별)", "type": "main", "index": 0 }],
+        [{ "node": "12a. 구간별 영상 프롬프트 요청 만들기", "type": "main", "index": 0 }]
+      ]
+    },
+    "12a. 구간별 영상 프롬프트 요청 만들기": { "main": [[{ "node": "12b. 구간별 영상 프롬프트 작성", "type": "main", "index": 0 }]] },
+    "12b. 구간별 영상 프롬프트 작성": { "main": [[{ "node": "12c. 구간 수 확인 (코드)", "type": "main", "index": 0 }]] },
+    "12c. 구간 수 확인 (코드)": { "main": [[{ "node": "13a. 영상 생성(1차) 요청 만들기", "type": "main", "index": 0 }]] },
+    "13a. 영상 생성(1차) 요청 만들기": { "main": [[{ "node": "13b. 영상 생성 (1차) 제출", "type": "main", "index": 0 }]] },
+    "13b. 영상 생성 (1차) 제출": { "main": [[{ "node": "13c. task_id 추출", "type": "main", "index": 0 }]] },
+    "13c. task_id 추출": { "main": [[{ "node": "13d. 대기(10초)", "type": "main", "index": 0 }]] },
+    "13d. 대기(10초)": { "main": [[{ "node": "13e. 상태 조회", "type": "main", "index": 0 }]] },
+    "13e. 상태 조회": { "main": [[{ "node": "13f. 상태 추출", "type": "main", "index": 0 }]] },
+    "13f. 상태 추출": { "main": [[{ "node": "13g. 완료됐나?", "type": "main", "index": 0 }]] },
+    "13g. 완료됐나?": {
+      "main": [
+        [{ "node": "14i. 이어붙일 구간 남았나?", "type": "main", "index": 0 }],
+        [{ "node": "13h. 실패했나?", "type": "main", "index": 0 }]
+      ]
+    },
+    "13h. 실패했나?": {
+      "main": [
+        [{ "node": "13i. 재시도 남았나 (최대3)", "type": "main", "index": 0 }],
+        [{ "node": "13d. 대기(10초)", "type": "main", "index": 0 }]
+      ]
+    },
+    "13i. 재시도 남았나 (최대3)": {
+      "main": [
+        [{ "node": "13j. 재시도 카운트 올리고 다시 생성", "type": "main", "index": 0 }],
+        [{ "node": "13k. 영상 생성 실패 → 사람에게", "type": "main", "index": 0 }]
+      ]
+    },
+    "13j. 재시도 카운트 올리고 다시 생성": { "main": [[{ "node": "13a. 영상 생성(1차) 요청 만들기", "type": "main", "index": 0 }]] },
+    "14a. 이어붙이기 요청 만들기": { "main": [[{ "node": "14b. 이어붙이기 (Extend) 제출", "type": "main", "index": 0 }]] },
+    "14b. 이어붙이기 (Extend) 제출": { "main": [[{ "node": "14c. task_id 갱신", "type": "main", "index": 0 }]] },
+    "14c. task_id 갱신": { "main": [[{ "node": "14d. 대기(10초)", "type": "main", "index": 0 }]] },
+    "14d. 대기(10초)": { "main": [[{ "node": "14e. 상태 조회", "type": "main", "index": 0 }]] },
+    "14e. 상태 조회": { "main": [[{ "node": "14f. 상태 추출", "type": "main", "index": 0 }]] },
+    "14f. 상태 추출": { "main": [[{ "node": "14g. 이어붙이기 완료됐나?", "type": "main", "index": 0 }]] },
+    "14g. 이어붙이기 완료됐나?": {
+      "main": [
+        [{ "node": "14h. 다음 구간으로", "type": "main", "index": 0 }],
+        [{ "node": "14g2. 실패했나?", "type": "main", "index": 0 }]
+      ]
+    },
+    "14g2. 실패했나?": {
+      "main": [
+        [{ "node": "14g3. 재시도 남았나 (최대2)", "type": "main", "index": 0 }],
+        [{ "node": "14d. 대기(10초)", "type": "main", "index": 0 }]
+      ]
+    },
+    "14g3. 재시도 남았나 (최대2)": {
+      "main": [
+        [{ "node": "14g4. 재시도 카운트 올리고 다시 요청", "type": "main", "index": 0 }],
+        [{ "node": "14g5. 이어붙이기 실패 → 사람에게", "type": "main", "index": 0 }]
+      ]
+    },
+    "14g4. 재시도 카운트 올리고 다시 요청": { "main": [[{ "node": "14a. 이어붙이기 요청 만들기", "type": "main", "index": 0 }]] },
+    "14h. 다음 구간으로": { "main": [[{ "node": "14i. 이어붙일 구간 남았나?", "type": "main", "index": 0 }]] },
+    "14i. 이어붙일 구간 남았나?": {
+      "main": [
+        [{ "node": "14a. 이어붙이기 요청 만들기", "type": "main", "index": 0 }],
+        [{ "node": "15a. 오디오 합성 요청 만들기", "type": "main", "index": 0 }]
+      ]
+    },
+    "15a. 오디오 합성 요청 만들기": { "main": [[{ "node": "15b. 오디오 합성 (로컬 ffmpeg 서버)", "type": "main", "index": 0 }]] },
+    "15b. 오디오 합성 (로컬 ffmpeg 서버)": { "main": [[{ "node": "15c. 최종 파일명 만들기", "type": "main", "index": 0 }]] },
+    "15c. 최종 파일명 만들기": { "main": [[{ "node": "15d. 최종 영상 Supabase 업로드", "type": "main", "index": 0 }]] },
+    "15d. 최종 영상 Supabase 업로드": { "main": [[{ "node": "16. 완료 (최종 영상)", "type": "main", "index": 0 }]] }
+  },
+  "pinData": {},
+  "meta": { "instanceId": "reel-pipeline-workflow" }
+}

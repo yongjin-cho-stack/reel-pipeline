@@ -160,15 +160,23 @@ def calc_segments(target_length_sec):
 # ============================================================
 # 3단계: 대본 생성 + 검증 (재시도 최대 2바퀴 = 최대 3회 시도)
 # ============================================================
-def build_script_prompt(topic, target_length_sec, must_include_keywords, example_script, script_feedback, attempt, fail_reason):
+def build_script_prompt(topic, target_length_sec, must_include_keywords, example_script, script_feedback, attempt, fail_reason, previous_narration=None):
     rate = 4
     max_chars = round(target_length_sec * rate)
     example = example_script or "(예시 없음, 자연스러운 홍보 톤으로 자유롭게)"
     extra = ""
     if attempt > 0 and fail_reason:
         extra += f"\n\n[이전 시도 문제점 — 반드시 고쳐서 다시 써줘]\n{fail_reason}"
-    if attempt > 0 and script_feedback:
-        extra += f"\n\n[사용자 수정 요청 — 톤/타깃/강조/금지어]\n{script_feedback}"
+    # attempt 번호와 상관없이 항상 반영 — 예전엔 attempt>0일 때만 넣어서 재시도 첫 시도에서
+    # 사용자 피드백이 조용히 씹히는 버그가 있었음
+    if script_feedback:
+        if previous_narration:
+            extra += (
+                f"\n\n[방금 나온 대본 — 이 대본을 기준으로 아래 요청사항만 반영해서 수정해줘, "
+                f"나머지 내용/톤은 최대한 유지]\n{previous_narration}\n\n[수정 요청]\n{script_feedback}"
+            )
+        else:
+            extra += f"\n\n[사용자 수정 요청 — 톤/타깃/강조/금지어]\n{script_feedback}"
 
     kw_line = f"다음 키워드는 대본에 반드시 그대로 포함해라: {', '.join(must_include_keywords)}\n" if must_include_keywords else ""
     prompt = (
@@ -197,12 +205,12 @@ def verify_script(narration, must_include_keywords, target_length_sec):
     return len(problems) == 0, " / ".join(problems)
 
 
-def generate_script(topic, target_length_sec, must_include_keywords, example_script, script_feedback, call_llm):
+def generate_script(topic, target_length_sec, must_include_keywords, example_script, script_feedback, call_llm, previous_narration=None):
     attempt = 0
     fail_reason = ""
     while True:
         prompt, max_chars = build_script_prompt(
-            topic, target_length_sec, must_include_keywords, example_script, script_feedback, attempt, fail_reason
+            topic, target_length_sec, must_include_keywords, example_script, script_feedback, attempt, fail_reason, previous_narration
         )
         log("script", f"시도 {attempt + 1}회 — LLM 호출...")
         narration = call_llm(prompt)
