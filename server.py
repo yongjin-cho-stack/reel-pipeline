@@ -1,13 +1,45 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Header, HTTPException, Depends
 from fastapi.responses import FileResponse, HTMLResponse
+from pydantic import BaseModel
+from typing import Optional
 import asyncio
 import subprocess
 import tempfile
+import threading
 import os
 import uuid
 import requests
 
 app = FastAPI()
+
+# RITA 등 외부 호출자 인증용. 배포 환경에 환경변수로 설정해야 함 (코드에 값 직접 안 넣음).
+RITA_TOKEN = os.environ.get("RITA_TOKEN", "")
+
+
+def verify_rita_token(authorization: str = Header(None)):
+    """/run-pipeline 등 외부 노출 엔드포인트 보호용. Authorization: Bearer <RITA_TOKEN> 헤더 필요.
+    RITA_TOKEN 환경변수가 아예 안 설정된 로컬 개발 상태에서는(값이 비어있으면) 검사를 건너뜀 —
+    로컬 테스트를 막지 않기 위함. 배포할 땐 반드시 RITA_TOKEN을 설정해서 이 우회를 없앨 것."""
+    if not RITA_TOKEN:
+        return
+    if authorization != f"Bearer {RITA_TOKEN}":
+        raise HTTPException(status_code=401, detail="인증 실패: 유효한 토큰이 필요합니다.")
+
+
+class RunPipelineRequest(BaseModel):
+    """RITA 등 외부 호출자가 /run-pipeline에 보낼 요청 형식.
+    brand_id를 비워두면 신규 캐릭터 등록, 있으면 기존 캐릭터 재사용."""
+    brand_id: Optional[str] = ""
+    brand_description: Optional[str] = ""          # 신규 등록시
+    edit_category: Optional[str] = None             # 캐릭터 수정시만
+    edit_instruction: Optional[str] = None           # 캐릭터 수정시만
+    base_image_url: Optional[str] = None             # 캐릭터 수정시만
+    topic: str
+    target_length_sec: int
+    must_include_keywords: Optional[str] = ""
+    script_feedback: Optional[str] = None
+    video_feedback_want: Optional[str] = None
+    video_feedback_avoid: Optional[str] = None
 
 OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY", "")
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "google/gemini-3.1-flash")
@@ -176,8 +208,13 @@ async def merge_audio(request: Request):
     with open(video_path, "wb") as f:
         f.write(resp.content)
 
-    stretched_paths = []
-    stretch_log = []
+    # 구간마다 따로 atempo로 속도를 맞추면(예전 방식) 구간별로 말하는 빠르기가 제각각이 되어
+    # 이어 들었을 때 천천히-빠르게-정상 이 오락가락해서 부자연스럽다는 피드백을 받음.
+    # 그래서 여기서는 구간별 재생속도 보정을 하지 않고 원본 그대로 이어붙인다 — 목소리 속도는
+    # reel_pipeline.generate_narration_audio()에서 전체에 동일한 speakingRate로 이미 맞춰져 있고,
+    # 구간 하나하나가 담당 영상 길이랑 칼같이 안 맞는 자투리 오차(무음 구간 등)는 감수한다.
+    audio_paths = []
+    duration_log = []
     for i, seg in enumerate(segments):
         url = seg.get("audio_url")
         target = seg.get("target_duration_s")
@@ -187,27 +224,16 @@ async def merge_audio(request: Request):
         raw_path = os.path.join(work_dir, f"audio_{i}_raw.mp3")
         with open(raw_path, "wb") as f:
             f.write(r.content)
-
         if target:
             actual = _probe_duration(raw_path)
-            if actual and actual > 0.1:
-                ratio = actual / target  # atempo 배속 = 원래길이/목표길이
-                ratio = max(0.3, min(3.0, ratio))  # 극단적인 왜곡 방지 안전장치
-                stretched_path = os.path.join(work_dir, f"audio_{i}.m4a")
-                cmd = ["ffmpeg", "-y", "-i", raw_path, "-filter:a", _atempo_chain(ratio), "-c:a", "aac", stretched_path]
-                rr = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                if rr.returncode != 0:
-                    return {"error": f"Segment {i} time-stretch failed", "detail": rr.stderr[-2000:]}
-                stretch_log.append({"segment": i, "actual_s": round(actual, 2), "target_s": target, "speed_ratio": round(ratio, 3)})
-                stretched_paths.append(stretched_path)
-                continue
-        stretched_paths.append(raw_path)
+            if actual:
+                duration_log.append({"segment": i, "actual_s": round(actual, 2), "target_s": target})
+        audio_paths.append(raw_path)
 
-    audio_paths = stretched_paths
-    if stretch_log:
-        print(f"[merge-audio] 구간별 속도 조정: {stretch_log}")
+    if duration_log:
+        print(f"[merge-audio] 구간별 실제/목표 길이(참고용, 보정은 안 함): {duration_log}")
 
-    # 나레이션 조각들을 순서대로 이어붙이기 (이미 구간별로 목표 길이에 맞춰져 있어 경계가 영상과 맞음)
+    # 나레이션 조각들을 순서대로 이어붙이기 (전체 길이 차이는 아래에서 영상 쪽을 한 번에 맞춤)
     concat_list_path = os.path.join(work_dir, "concat_list.txt")
     with open(concat_list_path, "w", encoding="utf-8") as f:
         for p in audio_paths:
@@ -273,27 +299,38 @@ async def merge_audio(request: Request):
     return FileResponse(output_path, media_type="video/mp4", filename="final_with_audio.mp4", headers=headers)
 
 
-@app.post("/run-pipeline")
-def run_pipeline_endpoint(body: dict):
-    """브랜드 캐릭터 숏츠 파이프라인 전체를 한 번에 실행한다.
-    JSON body 예시:
-    {
-      "brand_id": "",                 // 비워두면 신규 등록, 있으면 기존 캐릭터 재사용
-      "brand_description": "...",     // 신규 등록시
-      "edit_category": "", "edit_instruction": "", "base_image_url": "",  // 캐릭터 수정시만
-      "topic": "...", "target_length_sec": 15,
-      "must_include_keywords": "키워드1, 키워드2",
-      "script_feedback": "", "video_feedback_want": "", "video_feedback_avoid": ""
-    }
-    일부러 async가 아니라 일반 def로 만듦 — FastAPI가 이런 건 스레드풀에서 돌려서,
-    이 안에서 서버 자기 자신(/merge-audio)을 다시 호출해도 이벤트 루프가 막히지 않음.
-    """
+pipeline_jobs = {}  # job_id -> {"status": "processing"|"done"|"error", "result": {...}}
+
+
+def _run_pipeline_worker(job_id, inputs):
     import reel_pipeline
     try:
-        result = reel_pipeline.run_pipeline(body, reel_pipeline.real_deps())
-        return result
+        result = reel_pipeline.run_pipeline(inputs, reel_pipeline.real_deps())
+        pipeline_jobs[job_id] = {"status": "done", "result": result}
     except Exception as e:
-        return {"error": str(e)}
+        pipeline_jobs[job_id] = {"status": "error", "result": {"error": str(e)}}
+
+
+@app.post("/run-pipeline", dependencies=[Depends(verify_rita_token)])
+def run_pipeline_endpoint(body: RunPipelineRequest):
+    """브랜드 캐릭터 숏츠 파이프라인 전체를 실행한다. 캐릭터+대본+영상까지 몇 분씩 걸리므로,
+    RITA 등 배포 환경의 프록시가 응답을 오래 기다리다 타임아웃내는 걸 피하기 위해
+    즉시 접수 확인만 반환하고, 실제 작업은 백그라운드 스레드에서 계속 진행한다.
+    결과는 /run-pipeline/status/{job_id}로 따로 조회해야 한다.
+    """
+    job_id = str(uuid.uuid4())
+    pipeline_jobs[job_id] = {"status": "processing", "result": None}
+    thread = threading.Thread(target=_run_pipeline_worker, args=(job_id, body.model_dump()), daemon=True)
+    thread.start()
+    return {"status": "accepted", "job_id": job_id}
+
+
+@app.get("/run-pipeline/status/{job_id}", dependencies=[Depends(verify_rita_token)])
+def run_pipeline_status(job_id: str):
+    job = pipeline_jobs.get(job_id)
+    if not job:
+        return {"error": f"job_id={job_id} 를 찾을 수 없어요 (서버 재시작되면 기록이 사라져요)"}
+    return job
 
 
 # ============================================================
