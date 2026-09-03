@@ -34,8 +34,8 @@ class RunPipelineRequest(BaseModel):
     edit_category: Optional[str] = None             # 캐릭터 수정시만
     edit_instruction: Optional[str] = None           # 캐릭터 수정시만
     base_image_url: Optional[str] = None             # 캐릭터 수정시만
-    topic: str
-    target_length_sec: int
+    topic: Optional[str] = None
+    target_length_sec: Optional[int] = None
     must_include_keywords: Optional[str] = ""
     script_feedback: Optional[str] = None
     video_feedback_want: Optional[str] = None
@@ -317,7 +317,18 @@ def run_pipeline_endpoint(body: RunPipelineRequest):
     RITA 등 배포 환경의 프록시가 응답을 오래 기다리다 타임아웃내는 걸 피하기 위해
     즉시 접수 확인만 반환하고, 실제 작업은 백그라운드 스레드에서 계속 진행한다.
     결과는 /run-pipeline/status/{job_id}로 따로 조회해야 한다.
+
+    topic/target_length_sec 없이(빈 값으로) 오는 요청은 RITA 등의 연결 테스트(핑)로 간주해
+    실제 파이프라인(비용 발생)은 돌리지 않고 가벼운 성공 응답만 돌려준다.
     """
+    if not body.topic or not body.target_length_sec:
+        job_id = "test-connection"
+        pipeline_jobs[job_id] = {
+            "status": "done",
+            "result": {"note": "연결 테스트 응답입니다. 실제 영상 생성은 topic과 target_length_sec을 채워서 요청하세요."},
+        }
+        return {"status": "accepted", "job_id": job_id}
+
     job_id = str(uuid.uuid4())
     pipeline_jobs[job_id] = {"status": "processing", "result": None}
     thread = threading.Thread(target=_run_pipeline_worker, args=(job_id, body.model_dump()), daemon=True)
