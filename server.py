@@ -299,16 +299,17 @@ async def merge_audio(request: Request):
     return FileResponse(output_path, media_type="video/mp4", filename="final_with_audio.mp4", headers=headers)
 
 
-pipeline_jobs = {}  # job_id -> {"status": "processing"|"done"|"error", "result": {...}}
+pipeline_jobs = {}  # job_id -> {"status": "pending"|"running"|"completed"|"failed", "result": {...}}
 
 
 def _run_pipeline_worker(job_id, inputs):
     import reel_pipeline
+    pipeline_jobs[job_id] = {"status": "running", "result": None}
     try:
         result = reel_pipeline.run_pipeline(inputs, reel_pipeline.real_deps())
-        pipeline_jobs[job_id] = {"status": "done", "result": result}
+        pipeline_jobs[job_id] = {"status": "completed", "result": result}
     except Exception as e:
-        pipeline_jobs[job_id] = {"status": "error", "result": {"error": str(e)}}
+        pipeline_jobs[job_id] = {"status": "failed", "result": {"error": str(e)}}
 
 
 @app.post("/run-pipeline", dependencies=[Depends(verify_rita_token)])
@@ -324,13 +325,13 @@ def run_pipeline_endpoint(body: RunPipelineRequest):
     if not body.topic or not body.target_length_sec:
         job_id = "test-connection"
         pipeline_jobs[job_id] = {
-            "status": "done",
+            "status": "completed",
             "result": {"note": "연결 테스트 응답입니다. 실제 영상 생성은 topic과 target_length_sec을 채워서 요청하세요."},
         }
         return {"status": "accepted", "job_id": job_id}
 
     job_id = str(uuid.uuid4())
-    pipeline_jobs[job_id] = {"status": "processing", "result": None}
+    pipeline_jobs[job_id] = {"status": "pending", "result": None}
     thread = threading.Thread(target=_run_pipeline_worker, args=(job_id, body.model_dump()), daemon=True)
     thread.start()
     return {"status": "accepted", "job_id": job_id}
